@@ -19,7 +19,10 @@
 #include <qpdf/Pipeline.hh>
 #include <qpdf/Pl_Buffer.hh>
 
-py::size_t page_index(QPDF &owner, QPDFObjectHandle page)
+// A O(n) search for a page index, for use when QPDF::findPage is not public
+// Deprecation: remove this when we drop support for qpdf <= 10.4.0, when
+// QPDF::findPage was made public
+py::size_t page_index_impl(QPDF &owner, QPDFObjectHandle &page)
 {
     if (&owner != page.getOwningQPDF())
         throw py::value_error("Page is not in this Pdf");
@@ -36,6 +39,38 @@ py::size_t page_index(QPDF &owner, QPDFObjectHandle page)
     auto idx = it - all_pages.begin();
     assert(idx >= 0);
     return idx;
+}
+
+// This template describes where to find QPDF::findPage if public
+template <class T>
+auto findpage_impl(QPDF &owner, T &page, int)
+    -> decltype(owner.findPage(page), py::size_t())
+{
+    return owner.findPage(page);
+}
+
+// This template provides an implementation of findpage that manually searches for
+// the page index
+template <class T>
+auto findpage_impl(QPDF &owner, T &page, long)
+    -> decltype(page_index_impl(owner, page), py::size_t())
+{
+    return page_index_impl(owner, page);
+}
+
+// This template tells the compiler to consider the two alternative templates above.
+// If the first findpage_impl template does not compile it will fall back to the
+// second via SFINAE.
+template <class T>
+auto findpage(QPDF &owner, T &page)
+    -> decltype(findpage_impl(owner, page, 0), py::size_t())
+{
+    return findpage_impl(owner, page, 0);
+}
+
+py::size_t page_index(QPDF &owner, QPDFObjectHandle page)
+{
+    return findpage<QPDFObjectHandle>(owner, page);
 }
 
 std::string label_string_from_dict(QPDFObjectHandle label_dict)
@@ -301,9 +336,15 @@ void init_page(py::module_ &m)
                 A ``ValueError`` exception is thrown if the page is not attached
                 to a ``Pdf``.
 
-                Requires O(n) search.
+                If libqpdf is less than 10.4.0, a O(n) search is performed. If
+                libqpdf is 10.4.0 or newer, a O(1) lookup is available and will
+                be used.
 
                 .. versionadded:: 2.2
+
+                .. versionchanged:: 4.1.0
+                    Use O(1) search when available.
+
             )~~~")
         .def_property_readonly(
             "label",
